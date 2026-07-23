@@ -1,0 +1,192 @@
+classDiagram
+    direction LR
+
+    class PROVIDERS {
+        bigint id PK
+        text name
+        text slug UNIQUE
+        text status
+        text shared_secret
+        timestamptz created_at
+    }
+
+    class USERS {
+        bigint id PK
+        text email UNIQUE
+        text password_hash
+        text name
+        timestamptz created_at
+    }
+
+    class PROVIDER_MEMBERS {
+        bigint user_id PK,FK
+        bigint provider_id PK,FK
+        text role
+        timestamptz added_at
+    }
+
+    class CONSUMER_MEMBERS {
+        bigint user_id PK,FK
+        bigint consumer_id PK,FK
+        text role
+        timestamptz added_at
+    }
+
+    class CONSUMERS {
+        bigint id PK
+        bigint provider_id FK
+        text name
+        text contact_name NULL
+        text email
+        text status
+        timestamptz created_at
+        UNIQUE(provider_id, email)
+    }
+
+    class APIS {
+        bigint id PK
+        bigint provider_id FK
+        text name
+        text slug
+        text upstream_url
+        text status
+        UNIQUE(provider_id, slug)
+    }
+
+    class API_ENDPOINTS {
+        bigint id PK
+        bigint api_id FK
+        text method
+        text path
+        UNIQUE(api_id, method, path)
+    }
+
+    class RATE_LIMIT_POLICIES {
+        bigint id PK
+        int requests
+        int window_seconds
+        int burst NULL
+        text algorithm
+    }
+
+    class PLANS {
+        bigint id PK
+        bigint api_id FK
+        bigint rate_limit_policy_id FK
+        text name
+        bigint monthly_quota
+        boolean overage_allowed
+        numeric overage_price
+        numeric price_monthly
+        text status
+        UNIQUE(api_id, name)
+    }
+
+    class SUBSCRIPTIONS {
+        bigint id PK
+        bigint consumer_id FK
+        bigint api_id FK
+        bigint plan_id FK
+        text status
+        date cycle_anchor
+        timestamptz created_at
+        timestamptz started_at NULL
+        timestamptz cancelled_at NULL
+        UNIQUE(consumer_id, api_id) WHERE active
+    }
+
+    class API_KEYS {
+        bigint id PK
+        bigint consumer_id FK
+        text key_hash UNIQUE
+        text key_prefix
+        text status
+        timestamptz expires_at NULL
+        timestamptz last_used_at NULL
+        timestamptz created_at
+        timestamptz revoked_at NULL
+    }
+
+    class USAGE_EVENTS {
+        bigint id PK
+        timestamptz occurred_at PK_partition
+        bigint provider_id FK_denorm
+        bigint consumer_id FK
+        bigint api_id FK
+        bigint subscription_id FK
+        bigint endpoint_id FK_null
+        text method
+        text path
+        int status_code
+        text outcome
+        int latency_ms
+        int upstream_ms
+        bigint request_bytes NULL
+        bigint response_bytes NULL
+        text idempotency_key NULL
+    }
+
+    class USAGE_HOURLY {
+        bigint consumer_id PK
+        bigint api_id PK
+        timestamptz hour PK
+        bigint provider_id denorm
+        bigint calls_forwarded
+        bigint calls_blocked
+        bigint rate_limited
+        bigint upstream_errors
+        int p95_latency_ms
+        bigint total_upstream_ms
+        note: derived, no FK constraints declared
+    }
+
+    class STATEMENTS {
+        bigint id PK
+        bigint subscription_id FK
+        date period_start
+        date period_end
+        bigint calls_included
+        bigint calls_used
+        bigint overage_calls
+        numeric base_amount
+        numeric overage_amount
+        numeric total
+        text status
+        UNIQUE(subscription_id, period_start)
+    }
+
+    class AUDIT_LOG {
+        bigint id PK
+        bigint provider_id FK
+        text actor
+        text action
+        text entity_type
+        bigint entity_id polymorphic_no_FK
+        jsonb detail
+        timestamptz occurred_at
+    }
+
+    %% ============ FOREIGN KEY REFERENCES (arrow points at referenced table) ============
+    PROVIDER_MEMBERS --> USERS : user_id → id
+    PROVIDER_MEMBERS --> PROVIDERS : provider_id → id
+    CONSUMER_MEMBERS --> USERS : user_id → id
+    CONSUMER_MEMBERS --> CONSUMERS : consumer_id → id
+    CONSUMERS --> PROVIDERS : provider_id → id
+    APIS --> PROVIDERS : provider_id → id
+    API_ENDPOINTS --> APIS : api_id → id
+    PLANS --> APIS : api_id → id
+    PLANS --> RATE_LIMIT_POLICIES : rate_limit_policy_id → id
+    SUBSCRIPTIONS --> CONSUMERS : consumer_id → id
+    SUBSCRIPTIONS --> APIS : api_id → id
+    SUBSCRIPTIONS --> PLANS : plan_id → id
+    API_KEYS --> CONSUMERS : consumer_id → id
+    USAGE_EVENTS --> PROVIDERS : provider_id → id (denormalized)
+    USAGE_EVENTS --> CONSUMERS : consumer_id → id
+    USAGE_EVENTS --> APIS : api_id → id
+    USAGE_EVENTS --> SUBSCRIPTIONS : subscription_id → id
+    USAGE_EVENTS --> API_ENDPOINTS : endpoint_id → id (nullable)
+    USAGE_HOURLY ..> CONSUMERS : consumer_id (logical, no constraint)
+    USAGE_HOURLY ..> APIS : api_id (logical, no constraint)
+    USAGE_HOURLY ..> PROVIDERS : provider_id (logical, denormalized)
+    STATEMENTS --> SUBSCRIPTIONS : subscription_id → id
+    AUDIT_LOG --> PROVIDERS : provider_id → id

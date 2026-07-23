@@ -1,0 +1,187 @@
+erDiagram
+    %% ============ TENANCY ============
+    PROVIDERS ||--o{ CONSUMERS : "onboards"
+    PROVIDERS ||--o{ APIS : "publishes"
+    PROVIDERS ||--o{ AUDIT_LOG : "generates"
+
+    %% ============ IDENTITY (login) ============
+    USERS ||--o{ PROVIDER_MEMBERS : "belongs to"
+    PROVIDERS ||--o{ PROVIDER_MEMBERS : "staffed by"
+    USERS ||--o{ CONSUMER_MEMBERS : "belongs to"
+    CONSUMERS ||--o{ CONSUMER_MEMBERS : "accessed by"
+
+    %% ============ PRODUCTS ============
+    APIS ||--o{ API_ENDPOINTS : "exposes"
+    APIS ||--o{ PLANS : "priced by"
+    RATE_LIMIT_POLICIES ||--o{ PLANS : "throttles"
+
+    %% ============ CORE JOIN ============
+    CONSUMERS ||--o{ SUBSCRIPTIONS : "holds"
+    APIS ||--o{ SUBSCRIPTIONS : "subscribed via"
+    PLANS ||--o{ SUBSCRIPTIONS : "governs"
+
+    %% ============ KEYS ============
+    CONSUMERS ||--o{ API_KEYS : "owns"
+
+    %% ============ USAGE ============
+    SUBSCRIPTIONS ||--o{ USAGE_EVENTS : "meters"
+    API_ENDPOINTS |o--o{ USAGE_EVENTS : "hit (nullable)"
+    SUBSCRIPTIONS ||--o{ STATEMENTS : "billed via"
+
+    PROVIDERS {
+        bigint id PK
+        text name
+        text slug UK "gateway.meterly.io/{slug}/..."
+        text status "active | suspended"
+        text shared_secret "header sent to upstream"
+        timestamptz created_at
+    }
+
+    USERS {
+        bigint id PK
+        text email UK "login identity, GLOBAL unique"
+        text password_hash
+        text name
+        timestamptz created_at
+    }
+
+    PROVIDER_MEMBERS {
+        bigint user_id PK "composite PK (user, provider)"
+        bigint provider_id PK
+        text role "owner | member"
+        timestamptz added_at
+    }
+
+    CONSUMER_MEMBERS {
+        bigint user_id PK "composite PK (user, consumer)"
+        bigint consumer_id PK
+        text role "owner | member"
+        timestamptz added_at
+    }
+
+    CONSUMERS {
+        bigint id PK
+        bigint provider_id FK
+        text name "company name"
+        text contact_name "nullable"
+        text email "UNIQUE(provider_id, email)"
+        text status "active | suspended"
+        timestamptz created_at
+    }
+
+    APIS {
+        bigint id PK
+        bigint provider_id FK
+        text name "e.g. Weather API"
+        text slug "UNIQUE(provider_id, slug)"
+        text upstream_url
+        text status "active | deprecated | disabled"
+    }
+
+    API_ENDPOINTS {
+        bigint id PK
+        bigint api_id FK
+        text method
+        text path "UNIQUE(api_id, method, path)"
+    }
+
+    PLANS {
+        bigint id PK
+        bigint api_id FK "plans scoped to ONE api"
+        bigint rate_limit_policy_id FK
+        text name "Free | Pro -- UNIQUE(api_id, name)"
+        bigint monthly_quota
+        boolean overage_allowed
+        numeric overage_price "per call beyond quota"
+        numeric price_monthly
+        text status "active | retired -- rows IMMUTABLE, version by new row"
+    }
+
+    RATE_LIMIT_POLICIES {
+        bigint id PK
+        int requests
+        int window_seconds
+        int burst "nullable"
+        text algorithm "token_bucket | sliding_window | fixed_window"
+    }
+
+    SUBSCRIPTIONS {
+        bigint id PK
+        bigint consumer_id FK "UNIQUE(consumer_id, api_id) WHERE status=active"
+        bigint api_id FK
+        bigint plan_id FK
+        text status "active | paused | cancelled"
+        date cycle_anchor "monthly cycle reset"
+        timestamptz created_at
+        timestamptz started_at "activation, nullable"
+        timestamptz cancelled_at "nullable"
+    }
+
+    API_KEYS {
+        bigint id PK
+        bigint consumer_id FK "key -> consumer, not subscription"
+        text key_hash UK "SHA-256, never raw key"
+        text key_prefix "mk_live_a1b2 for display"
+        text status "active | revoked"
+        timestamptz expires_at "nullable, checked on hot path"
+        timestamptz last_used_at "written lazily via Redis, NOT per request"
+        timestamptz created_at
+        timestamptz revoked_at
+    }
+
+    USAGE_EVENTS {
+        bigint id PK "partitioned by month on occurred_at"
+        timestamptz occurred_at
+        bigint provider_id FK "DENORMALIZED on purpose"
+        bigint consumer_id FK
+        bigint api_id FK
+        bigint subscription_id FK
+        bigint endpoint_id FK "nullable"
+        text method
+        text path
+        int status_code
+        text outcome "forwarded | rate_limited | quota_blocked | auth_failed | upstream_error"
+        int latency_ms "total"
+        int upstream_ms "time in their server"
+        bigint request_bytes "nullable"
+        bigint response_bytes "nullable"
+        text idempotency_key "nullable"
+    }
+
+    USAGE_HOURLY {
+        bigint consumer_id PK "composite PK (consumer, api, hour)"
+        bigint api_id PK
+        timestamptz hour PK
+        bigint provider_id "DENORMALIZED, not in PK -- api determines provider"
+        bigint calls_forwarded "DERIVED - rebuildable rollup"
+        bigint calls_blocked
+        bigint rate_limited
+        bigint upstream_errors
+        int p95_latency_ms
+        bigint total_upstream_ms
+    }
+
+    STATEMENTS {
+        bigint id PK
+        bigint subscription_id FK "UNIQUE(subscription_id, period_start)"
+        date period_start
+        date period_end
+        bigint calls_included
+        bigint calls_used
+        bigint overage_calls
+        numeric base_amount
+        numeric overage_amount
+        numeric total
+        text status "draft | finalized"
+    }
+
+    AUDIT_LOG {
+        bigint id PK
+        bigint provider_id FK
+        text actor
+        text action
+        text entity_type
+        bigint entity_id "polymorphic ref, no FK"
+        jsonb detail
+        timestamptz occurred_at
+    }
