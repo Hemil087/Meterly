@@ -6,12 +6,16 @@ from fastapi.responses import Response
 
 from common.db import close_pool, get_pool
 
+from common.redis_client import get_redis, close_redis  
+from gateway.auth import resolve_auth                     
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await get_pool()   # warm up pool on startup
+    await get_redis()
     yield
     await close_pool() # clean shutdown
+    await close_redis()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -58,7 +62,17 @@ async def gateway(
     if api["status"] != "active":
         raise HTTPException(status_code=403, detail="API not active")
 
-    # ── 3. Forward ───────────────────────────────────────────────────────
+    # ── 3. Key auth ──────────────────────────────────────────────────────
+    raw_key = request.headers.get("X-API-Key")
+    if not raw_key:
+        raise HTTPException(status_code=401, detail="Missing X-API-Key header")
+
+    bundle = await resolve_auth(raw_key, api["id"])
+    if not bundle:
+        raise HTTPException(status_code=401, detail="Invalid or inactive key")
+
+
+    # ── 4. Forward ───────────────────────────────────────────────────────
     upstream_url = f"{api['upstream_url'].rstrip('/')}/{path}"
 
     forward_headers = {
