@@ -1,0 +1,130 @@
+classDiagram
+    direction TB
+
+    class GatewayHandler {
+        +handle(request) Response
+    }
+
+    class RequestContext {
+        provider_slug: str
+        api_slug: str
+        method: str
+        path: str
+        raw_key: str
+        consumer_id: bigint
+        subscription: Subscription
+        plan: Plan
+    }
+
+    class CheckResult {
+        allowed: bool
+        outcome: Outcome
+        http_status: int
+        headers: dict
+    }
+
+    class RequestCheck {
+        <<interface>>
+        +check(ctx) CheckResult
+    }
+
+    class KeyAuthCheck {
+        +check(ctx) CheckResult
+    }
+
+    class SubscriptionCheck {
+        +check(ctx) CheckResult
+    }
+
+    class RateLimitCheck {
+        +check(ctx) CheckResult
+    }
+
+    class QuotaCheck {
+        +check(ctx) CheckResult
+    }
+
+    class CheckPipeline {
+        checks: List~RequestCheck~
+        +run(ctx) CheckResult
+    }
+
+    class AuthCache {
+        <<interface>>
+        +resolve(key_hash) RequestContext
+    }
+
+    class RateLimiter {
+        <<interface>>
+        +try_acquire(key, limit) CheckResult
+    }
+
+    class TokenBucketLimiter {
+        +try_acquire(key, limit) CheckResult
+    }
+
+    class SlidingWindowLimiter {
+        +try_acquire(key, limit) CheckResult
+    }
+
+    class InMemoryLimiter {
+        +try_acquire(key, limit) CheckResult
+    }
+
+    class RateLimiterSelector {
+        +for_algorithm(name) RateLimiter
+    }
+
+    class QuotaStore {
+        <<interface>>
+        +increment_and_check(subscription_id, period, quota) CheckResult
+    }
+
+    class UsageRecorder {
+        <<interface>>
+        +record(event) void
+    }
+
+    class BufferedUsageRecorder {
+        +record(event) void
+    }
+
+    class DirectUsageRecorder {
+        +record(event) void
+    }
+
+    class UpstreamForwarder {
+        +forward(ctx) Response
+    }
+
+    class CircuitBreaker {
+        +allow() bool
+        +on_success() void
+        +on_failure() void
+    }
+
+    RequestCheck <|.. KeyAuthCheck
+    RequestCheck <|.. SubscriptionCheck
+    RequestCheck <|.. RateLimitCheck
+    RequestCheck <|.. QuotaCheck
+    CheckPipeline o-- RequestCheck
+
+    RateLimiter <|.. TokenBucketLimiter
+    RateLimiter <|.. SlidingWindowLimiter
+    RateLimiter <|.. InMemoryLimiter
+    UsageRecorder <|.. BufferedUsageRecorder
+    UsageRecorder <|.. DirectUsageRecorder
+
+    GatewayHandler --> CheckPipeline
+    GatewayHandler --> UpstreamForwarder
+    GatewayHandler --> UsageRecorder
+
+    KeyAuthCheck --> AuthCache
+    RateLimitCheck --> RateLimiterSelector
+    RateLimiterSelector ..> RateLimiter
+    QuotaCheck --> QuotaStore
+
+    UpstreamForwarder *-- CircuitBreaker
+
+    CheckPipeline ..> RequestContext
+    RequestCheck ..> CheckResult

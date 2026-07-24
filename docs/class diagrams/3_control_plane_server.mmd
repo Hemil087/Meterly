@@ -1,0 +1,109 @@
+classDiagram
+    direction TB
+
+    class ConsumerService {
+        +onboard(provider_id, details) Consumer
+        +suspend(consumer_id) void
+        +reactivate(consumer_id) void
+    }
+
+    class KeyService {
+        +issue(consumer_id, expires_at) RawKey
+        +revoke(key_id) void
+    }
+
+    class PlanService {
+        +create(api_id, spec) Plan
+        +change(old_plan_id, new_spec) Plan
+        +retire(plan_id) void
+    }
+
+    class SubscriptionService {
+        +subscribe(consumer_id, api_id, plan_id) Subscription
+        +change_plan(subscription_id, new_plan_id) Subscription
+        +cancel(subscription_id) void
+    }
+
+    class AuditWriter {
+        +log(actor, action, entity_type, entity_id, detail) void
+    }
+
+    class ConsumerRepository {
+        <<interface>>
+        +get(consumer_id) Consumer
+        +insert(consumer) Consumer
+        +set_status(consumer_id, status) void
+    }
+
+    class ApiKeyRepository {
+        <<interface>>
+        +get_by_hash(key_hash) ApiKey
+        +insert(key) ApiKey
+        +revoke(key_id) void
+    }
+
+    class PlanRepository {
+        <<interface>>
+        +get(plan_id) Plan
+        +insert(plan) Plan
+        +retire(plan_id) void
+    }
+
+    class SubscriptionRepository {
+        <<interface>>
+        +get(subscription_id) Subscription
+        +get_active(consumer_id, api_id) Subscription
+        +insert(subscription) Subscription
+        +save(subscription) void
+    }
+
+    class Database {
+        +acquire() Connection
+        +transaction() Transaction
+    }
+
+    class PostgresConsumerRepository {
+        +get(consumer_id) Consumer
+        +insert(consumer) Consumer
+        +set_status(consumer_id, status) void
+    }
+
+    class PostgresApiKeyRepository {
+        +get_by_hash(key_hash) ApiKey
+        +insert(key) ApiKey
+        +revoke(key_id) void
+    }
+
+    class PostgresPlanRepository {
+        +get(plan_id) Plan
+        +insert(plan) Plan
+        +retire(plan_id) void
+    }
+
+    class PostgresSubscriptionRepository {
+        +get(subscription_id) Subscription
+        +get_active(consumer_id, api_id) Subscription
+        +insert(subscription) Subscription
+        +save(subscription) void
+    }
+
+    ConsumerRepository <|.. PostgresConsumerRepository
+    ApiKeyRepository <|.. PostgresApiKeyRepository
+    PlanRepository <|.. PostgresPlanRepository
+    SubscriptionRepository <|.. PostgresSubscriptionRepository
+
+    PostgresConsumerRepository --> Database
+    PostgresApiKeyRepository --> Database
+    PostgresPlanRepository --> Database
+    PostgresSubscriptionRepository --> Database
+
+    ConsumerService --> ConsumerRepository
+    KeyService --> ApiKeyRepository
+    PlanService --> PlanRepository
+    SubscriptionService --> SubscriptionRepository
+    SubscriptionService --> PlanRepository
+
+    ConsumerService ..> AuditWriter
+    KeyService ..> AuditWriter
+    PlanService ..> AuditWriter
+    SubscriptionService ..> AuditWriter

@@ -1,0 +1,49 @@
+classDiagram
+    direction TB
+
+    class PricingScheme {
+        <<abstract>>
+        +compute(usage, plan)* Money
+    }
+
+    class FlatMonthlyPricing {
+        +compute(usage, plan) Money
+    }
+
+    class OveragePricing {
+        +compute(usage, plan) Money
+    }
+
+    class TieredPricing {
+        +compute(usage, plan) Money
+    }
+
+    class PricingSelector {
+        +for_plan(plan) PricingScheme
+    }
+
+    class UsageReader {
+        <<interface>>
+        +summary_for(subscription_id, period) UsageSummary
+    }
+
+    class StatementRepository {
+        <<interface>>
+        +upsert_draft(statement) Statement
+        +finalize(statement_id) void
+    }
+
+    class StatementGenerator {
+        +generate(subscription, period) Statement
+    }
+
+    PricingScheme <|-- FlatMonthlyPricing
+    PricingScheme <|-- OveragePricing
+    PricingScheme <|-- TieredPricing
+
+    StatementGenerator --> PricingSelector
+    StatementGenerator --> UsageReader
+    StatementGenerator --> StatementRepository
+    PricingSelector ..> PricingScheme
+    PricingScheme ..> Money
+    PricingScheme ..> UsageSummary

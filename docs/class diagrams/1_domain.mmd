@@ -1,0 +1,71 @@
+classDiagram
+    direction TB
+
+    class Money {
+        amount_minor: int
+        currency: str
+        +add(other) Money
+        +multiply(qty) Money
+    }
+
+    class RateLimit {
+        requests: int
+        window_seconds: int
+        burst: int
+        algorithm: str
+    }
+
+    class BillingPeriod {
+        start: date
+        end: date
+        +from_anchor(anchor, today)$ BillingPeriod
+    }
+
+    class UsageSummary {
+        calls_used: int
+        calls_included: int
+        +overage_calls() int
+    }
+
+    class SubscriptionStatus {
+        <<enumeration>>
+        ACTIVE
+        PAUSED
+        CANCELLED
+    }
+
+    class Outcome {
+        <<enumeration>>
+        FORWARDED
+        RATE_LIMITED
+        QUOTA_BLOCKED
+        AUTH_FAILED
+        UPSTREAM_ERROR
+    }
+
+    class Plan {
+        id: bigint
+        api_id: bigint
+        monthly_quota: int
+        overage_allowed: bool
+        price_monthly: Money
+        overage_price: Money
+        rate_limit: RateLimit
+    }
+
+    class Subscription {
+        id: bigint
+        consumer_id: bigint
+        api_id: bigint
+        plan_id: bigint
+        status: SubscriptionStatus
+        cycle_anchor: date
+        +can_activate() bool
+        +can_pause() bool
+        +can_cancel() bool
+        +transition_to(target) void
+    }
+
+    Plan *-- Money
+    Plan *-- RateLimit
+    Subscription --> SubscriptionStatus
