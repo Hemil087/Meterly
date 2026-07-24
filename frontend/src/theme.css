@@ -1,0 +1,31 @@
+:root {
+  /* Meterly brand palette */
+  --sage: #96a78d;
+  --sage-hover: #84967b;
+  --mid: #b6ceb4;
+  --light: #d9e9cf;
+  --off-white: #f0f0f0;
+  --dark: #3d4a38;
+
+  /* neutrals used alongside the brand palette */
+  --muted: #8a8f86;
+  --muted-2: #b6bab2;
+  --hairline: #ececec;
+
+  /* out-of-palette "attention" accent, used only for the rate-limit badge */
+  --amber-text: #a08a5a;
+  --amber-bg: #f2ead6;
+
+  --font-heading: 'Poppins', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+}
+
+@keyframes meterly-bar-pulse {
+  0%,
+  100% {
+    background: var(--off-white);
+  }
+  50% {
+    background: var(--light);
+  }
+}
