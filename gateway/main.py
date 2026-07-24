@@ -8,6 +8,7 @@ from common.db import close_pool, get_pool
 
 from common.redis_client import get_redis, close_redis  
 from gateway.auth import resolve_auth                     
+from gateway.ratelimit import check_rate_limit
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -71,8 +72,28 @@ async def gateway(
     if not bundle:
         raise HTTPException(status_code=401, detail="Invalid or inactive key")
 
+    # ── 4. Rate limit ────────────────────────────────────────────────────
+    allowed, remaining, retry_after_ms = await check_rate_limit(
+        subscription_id=bundle["subscription_id"],
+        requests=bundle["rl_requests"],
+        window_seconds=bundle["rl_window_seconds"],
+        burst=bundle["rl_burst"],
+    )
 
-    # ── 4. Forward ───────────────────────────────────────────────────────
+    if not allowed:
+        retry_after_secs = max(1, retry_after_ms // 1000)
+        return Response(
+            content='{"detail":"Rate limit exceeded"}',
+            status_code=429,
+            headers={
+                "Retry-After": str(retry_after_secs),
+                "X-RateLimit-Limit": str(bundle["rl_requests"]),
+                "X-RateLimit-Remaining": "0",
+                "Content-Type": "application/json",
+            },
+        )
+
+    # ── 5. Forward ───────────────────────────────────────────────────────
     upstream_url = f"{api['upstream_url'].rstrip('/')}/{path}"
 
     forward_headers = {
@@ -101,6 +122,9 @@ async def gateway(
         for k, v in upstream.headers.items()
         if k.lower() not in _HOP_BY_HOP
     }
+
+    response_headers["X-RateLimit-Limit"]     = str(bundle["rl_requests"])
+    response_headers["X-RateLimit-Remaining"] = str(remaining)
 
     return Response(
         content=upstream.content,
