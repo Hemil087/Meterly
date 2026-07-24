@@ -11,13 +11,19 @@ from gateway.auth import resolve_auth
 from gateway.ratelimit import check_rate_limit
 from gateway.quota import check_and_increment_quota
 
+import time
+from datetime import datetime, timezone
+from gateway.metering import UsageEvent, record, start_flush_task, stop_flush_task
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await get_pool()   # warm up pool on startup
     await get_redis()
+    await start_flush_task()
     yield
     await close_pool() # clean shutdown
     await close_redis()
+    await stop_flush_task()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -120,6 +126,8 @@ async def gateway(
         for k, v in request.headers.items()
         if k.lower() not in _HOP_BY_HOP
     }
+    # ── 7. Forward ───────────────────────────────────────────────────────
+    t_start = time.monotonic()
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -131,23 +139,55 @@ async def gateway(
                 params=dict(request.query_params),
             )
     except httpx.TimeoutException:
+        await record(UsageEvent(
+            occurred_at=datetime.now(timezone.utc),
+            provider_id=bundle["provider_id"],
+            consumer_id=bundle["consumer_id"],
+            api_id=bundle["api_id"],
+            subscription_id=bundle["subscription_id"],
+            endpoint_id=None,
+            method=request.method,
+            path=f"/{path}",
+            status_code=504,
+            outcome="upstream_error",
+            latency_ms=int((time.monotonic() - t_start) * 1000),
+            upstream_ms=0,
+            request_bytes=None,
+            response_bytes=None,
+        ))
         raise HTTPException(status_code=504, detail="Upstream timed out")
     except httpx.RequestError as e:
         raise HTTPException(status_code=502, detail=f"Upstream unreachable: {e}")
 
-    # Strip hop-by-hop from upstream response headers too
+    latency_ms  = int((time.monotonic() - t_start) * 1000)
+    upstream_ms = latency_ms  # simplified for now
+
+    await record(UsageEvent(
+        occurred_at=datetime.now(timezone.utc),
+        provider_id=bundle["provider_id"],
+        consumer_id=bundle["consumer_id"],
+        api_id=bundle["api_id"],
+        subscription_id=bundle["subscription_id"],
+        endpoint_id=None,
+        method=request.method,
+        path=f"/{path}",
+        status_code=upstream.status_code,
+        outcome="forwarded",
+        latency_ms=latency_ms,
+        upstream_ms=upstream_ms,
+        request_bytes=len(await request.body()),
+        response_bytes=len(upstream.content),
+    ))
+
     response_headers = {
-        k: v
-        for k, v in upstream.headers.items()
+        k: v for k, v in upstream.headers.items()
         if k.lower() not in _HOP_BY_HOP
     }
-
-    response_headers["X-RateLimit-Limit"]     = str(bundle["rl_requests"])
-    response_headers["X-RateLimit-Remaining"] = str(remaining)
     response_headers["X-RateLimit-Limit"]     = str(bundle["rl_requests"])
     response_headers["X-RateLimit-Remaining"] = str(remaining)
     response_headers["X-Quota-Limit"]         = str(bundle["monthly_quota"])
     response_headers["X-Quota-Used"]          = str(calls_used)
+
     return Response(
         content=upstream.content,
         status_code=upstream.status_code,
