@@ -1,0 +1,25 @@
+[project]
+name = "meterly"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+dependencies=[
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "asyncpg>=0.30",
+    "redis[hiredis]>=5.0",
+    "httpx>=0.27",
+    "pydantic-settings>=2.0",
+    "passlib[bcrypt]>=1.7",
+    "python-jose[cryptography]>=3.3",
+    "alembic>=1.13",
+]
+
+[project.optional-dependencies]
+dev=[
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "httpx",
+]
+[tool.setuptools.packages.find]
+include = ["common*", "gateway*", "controlplane*", "mock_upstream*"]

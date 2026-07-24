@@ -1,0 +1,12 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Env — never commit secrets
+.env
+
+# Mac
+.DS_Store
