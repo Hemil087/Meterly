@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from common.db import close_pool, get_pool
-from controlplane.routers import providers, consumers, apis, plans, subscriptions, keys
+from controlplane.routers import providers, consumers, apis, plans, subscriptions, keys, analytics
 
 
 @asynccontextmanager
@@ -19,3 +19,4 @@ app.include_router(apis.router)
 app.include_router(plans.router)
 app.include_router(subscriptions.router)
 app.include_router(keys.router)
+app.include_router(analytics.router)
