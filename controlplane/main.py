@@ -20,3 +20,10 @@ app.include_router(plans.router)
 app.include_router(subscriptions.router)
 app.include_router(keys.router)
 app.include_router(analytics.router)
+@app.get("/rate_limit_policies/")
+async def list_rate_limit_policies():
+    pool = await get_pool()
+    rows = await pool.fetch(
+        "SELECT id, requests, window_seconds, algorithm FROM rate_limit_policies"
+    )
+    return [dict(r) for r in rows]

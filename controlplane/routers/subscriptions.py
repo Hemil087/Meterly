@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from common.db import get_pool
 from controlplane.repositories.postgres.subscriptions import PostgresSubscriptionRepository
 from controlplane.repositories.postgres.plans import PostgresPlanRepository
-from controlplane.schemas.subscriptions import SubscriptionCreate, SubscriptionOut
+from controlplane.schemas.subscriptions import SubscriptionCreate, SubscriptionOut, PlanChange
 
 router = APIRouter(
     prefix="/providers/{provider_id}/consumers/{consumer_id}/subscriptions",
@@ -59,3 +59,27 @@ async def cancel_subscription(
     if not sub or sub["consumer_id"] != consumer_id:
         raise HTTPException(status_code=404, detail="Subscription not found")
     await sub_repo.set_status(subscription_id, "cancelled")
+
+
+@router.post("/{subscription_id}/change_plan", response_model=SubscriptionOut)
+async def change_plan(
+    provider_id: int,
+    consumer_id: int,
+    subscription_id: int,
+    body: PlanChange,
+    sub_repo: PostgresSubscriptionRepository = Depends(get_sub_repo),
+    plan_repo: PostgresPlanRepository = Depends(get_plan_repo),
+):
+    sub = await sub_repo.get(subscription_id)
+    if not sub or sub["consumer_id"] != consumer_id:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    if sub["status"] != "active":
+        raise HTTPException(status_code=400, detail="Subscription is not active")
+
+    plan = await plan_repo.get(body.new_plan_id)
+    if not plan or plan["api_id"] != sub["api_id"]:
+        raise HTTPException(status_code=400, detail="Plan does not belong to this API")
+
+    # Cancel old, create new — both in same api_id scope
+    await sub_repo.set_status(subscription_id, "cancelled")
+    return await sub_repo.insert(consumer_id, sub["api_id"], body.new_plan_id)

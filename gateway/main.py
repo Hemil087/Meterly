@@ -51,7 +51,7 @@ async def gateway(
 
     # ── 1. Resolve provider ──────────────────────────────────────────────
     provider = await pool.fetchrow(
-        "SELECT id, status FROM providers WHERE slug = $1",
+        "SELECT id, status, shared_secret FROM providers WHERE slug = $1",
         provider_slug,
     )
     if not provider:
@@ -127,9 +127,14 @@ async def gateway(
         if k.lower() not in _HOP_BY_HOP
     }
     # ── 7. Forward ───────────────────────────────────────────────────────
+    if provider["shared_secret"]:
+        forward_headers["Authorization"] = f"Bearer {provider['shared_secret'].strip()}"
+    #print(f"[DEBUG] Authorization header: {forward_headers.get('Authorization', 'NOT SET')}")
+
     t_start = time.monotonic()
 
     try:
+#        print(f"[DEBUG] Authorization header: {forward_headers.get('Authorization', 'NOT SET')}")
         async with httpx.AsyncClient(timeout=10.0) as client:
             upstream = await client.request(
                 method=request.method,
@@ -187,7 +192,8 @@ async def gateway(
     response_headers["X-RateLimit-Remaining"] = str(remaining)
     response_headers["X-Quota-Limit"]         = str(bundle["monthly_quota"])
     response_headers["X-Quota-Used"]          = str(calls_used)
-
+    if provider["shared_secret"]:
+        forward_headers["Authorization"] = f"Bearer {provider['shared_secret'].strip()}"
     return Response(
         content=upstream.content,
         status_code=upstream.status_code,

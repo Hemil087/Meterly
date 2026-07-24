@@ -4,7 +4,7 @@ import { Overview } from './pages/Overview'
 import { Consumers } from './pages/Consumers'
 import { Events } from './pages/Events'
 import { Keys } from './pages/Keys'
-
+import { Apis } from './pages/Apis'
 const PROVIDER_ID = 1
 
 const NAV = [
@@ -12,6 +12,8 @@ const NAV = [
   { to: '/consumers', label: 'Consumers' },
   { to: '/events',    label: 'Events'    },
   { to: '/keys',      label: 'Keys'      },
+  { to: '/apis', label: 'APIs' },
+
 ]
 
 function Header() {
@@ -70,6 +72,7 @@ export default function App() {
           <Route path="/consumers" element={<Consumers  providerId={PROVIDER_ID} />} />
           <Route path="/events"    element={<Events     providerId={PROVIDER_ID} />} />
           <Route path="/keys"      element={<Keys       providerId={PROVIDER_ID} />} />
+          <Route path="/apis" element={<Apis providerId={PROVIDER_ID} />} />
         </Routes>
       </main>
     </BrowserRouter>

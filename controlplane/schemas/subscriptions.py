@@ -17,3 +17,6 @@ class SubscriptionOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+class PlanChange(BaseModel):
+    new_plan_id: int
