@@ -9,6 +9,7 @@ from common.db import close_pool, get_pool
 from common.redis_client import get_redis, close_redis  
 from gateway.auth import resolve_auth                     
 from gateway.ratelimit import check_rate_limit
+from gateway.quota import check_and_increment_quota
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -93,7 +94,25 @@ async def gateway(
             },
         )
 
-    # ── 5. Forward ───────────────────────────────────────────────────────
+    # ── 5. Quota ─────────────────────────────────────────────────────────
+    quota_allowed, calls_used = await check_and_increment_quota(
+        subscription_id=bundle["subscription_id"],
+        monthly_quota=bundle["monthly_quota"],
+        overage_allowed=bundle["overage_allowed"],
+    )
+
+    if not quota_allowed:
+        return Response(
+            content='{"detail":"Monthly quota exceeded"}',
+            status_code=429,
+            headers={
+                "X-Quota-Limit": str(bundle["monthly_quota"]),
+                "X-Quota-Used": str(calls_used),
+                "Content-Type": "application/json",
+            },
+        )
+
+    # ── 6. Forward ───────────────────────────────────────────────────────
     upstream_url = f"{api['upstream_url'].rstrip('/')}/{path}"
 
     forward_headers = {
@@ -125,7 +144,10 @@ async def gateway(
 
     response_headers["X-RateLimit-Limit"]     = str(bundle["rl_requests"])
     response_headers["X-RateLimit-Remaining"] = str(remaining)
-
+    response_headers["X-RateLimit-Limit"]     = str(bundle["rl_requests"])
+    response_headers["X-RateLimit-Remaining"] = str(remaining)
+    response_headers["X-Quota-Limit"]         = str(bundle["monthly_quota"])
+    response_headers["X-Quota-Used"]          = str(calls_used)
     return Response(
         content=upstream.content,
         status_code=upstream.status_code,
