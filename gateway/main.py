@@ -1,0 +1,96 @@
+from contextlib import asynccontextmanager
+
+import httpx
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import Response
+
+from common.db import close_pool, get_pool
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await get_pool()   # warm up pool on startup
+    yield
+    await close_pool() # clean shutdown
+
+
+app = FastAPI(lifespan=lifespan)
+
+
+# Headers that must not be forwarded (hop-by-hop)
+_HOP_BY_HOP = {
+    "connection", "keep-alive", "transfer-encoding",
+    "te", "trailer", "upgrade", "proxy-authorization",
+    "proxy-authenticate", "host",
+}
+
+
+@app.api_route(
+    "/{provider_slug}/{api_slug}/{path:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+)
+async def gateway(
+    provider_slug: str,
+    api_slug: str,
+    path: str,
+    request: Request,
+) -> Response:
+    pool = await get_pool()
+
+    # ── 1. Resolve provider ──────────────────────────────────────────────
+    provider = await pool.fetchrow(
+        "SELECT id, status FROM providers WHERE slug = $1",
+        provider_slug,
+    )
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    if provider["status"] != "active":
+        raise HTTPException(status_code=403, detail="Provider suspended")
+
+    # ── 2. Resolve API ───────────────────────────────────────────────────
+    api = await pool.fetchrow(
+        "SELECT id, status, upstream_url FROM apis WHERE provider_id = $1 AND slug = $2",
+        provider["id"],
+        api_slug,
+    )
+    if not api:
+        raise HTTPException(status_code=404, detail="API not found")
+    if api["status"] != "active":
+        raise HTTPException(status_code=403, detail="API not active")
+
+    # ── 3. Forward ───────────────────────────────────────────────────────
+    upstream_url = f"{api['upstream_url'].rstrip('/')}/{path}"
+
+    forward_headers = {
+        k: v
+        for k, v in request.headers.items()
+        if k.lower() not in _HOP_BY_HOP
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            upstream = await client.request(
+                method=request.method,
+                url=upstream_url,
+                headers=forward_headers,
+                content=await request.body(),
+                params=dict(request.query_params),
+            )
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Upstream timed out")
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"Upstream unreachable: {e}")
+
+    # Strip hop-by-hop from upstream response headers too
+    response_headers = {
+        k: v
+        for k, v in upstream.headers.items()
+        if k.lower() not in _HOP_BY_HOP
+    }
+
+    return Response(
+        content=upstream.content,
+        status_code=upstream.status_code,
+        headers=response_headers,
+        media_type=upstream.headers.get("content-type"),
+    )
