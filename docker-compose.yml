@@ -3,42 +3,69 @@ services:
     image: postgres:16
     restart: unless-stopped
     environment:
-      POSTGRES_USER : meterly
+      POSTGRES_USER: meterly
       POSTGRES_PASSWORD: meterly
-      POSTGRES_DB : meterly
+      POSTGRES_DB: meterly
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-  
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U meterly"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   redis:
-    image : redis:7-alpine
+    image: redis:7-alpine
     restart: unless-stopped
     ports:
       - "6379:6379"
-  
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   mock_upstream:
-    build: ./mock_upstream
+    build:
+      context: ./mock_upstream
     ports:
       - "8002:8002"
-  
+
   gateway:
-    build: ./gateway
+    build:
+      context: .                        # root — so common/ is accessible
+      dockerfile: gateway/Dockerfile
     ports:
       - "8001:8001"
-    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://meterly:meterly@postgres:5432/meterly
+      DATABASE_URL_SYNC: postgresql://meterly:meterly@postgres:5432/meterly
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: change-me-in-prod
     depends_on:
-      - postgres
-      - redis
-  
-  controlplance:
-    build: ./controlplane
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  controlplane:
+    build:
+      context: .                        # root — so common/ is accessible
+      dockerfile: controlplane/Dockerfile
     ports:
-      - "8000:8000"
-    env_file: ./env
+      - "8080:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://meterly:meterly@postgres:5432/meterly
+      DATABASE_URL_SYNC: postgresql://meterly:meterly@postgres:5432/meterly
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: change-me-in-prod
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
 volumes:
   postgres_data:
