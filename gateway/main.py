@@ -9,6 +9,7 @@ from fastapi.responses import Response
 from common.db import close_pool, get_pool
 from common.redis_client import get_redis, close_redis
 from gateway.auth import resolve_auth
+from gateway.routing import resolve_route
 from gateway.ratelimit import check_rate_limit
 from gateway.quota import check_and_increment_quota
 from gateway.metering import UsageEvent, record, start_flush_task, stop_flush_task
@@ -93,28 +94,17 @@ async def gateway(
     request: Request,
 ) -> Response:
     t_start = time.monotonic()
-    pool = await get_pool()
 
-    # ── 1. Resolve provider ──────────────────────────────────────────────
-    provider = await pool.fetchrow(
-        "SELECT id, status, shared_secret FROM providers WHERE slug = $1",
-        provider_slug,
-    )
-    if not provider:
+    # ── 1-2. Resolve route (provider + api) — Redis-cached ───────────────
+    route = await resolve_route(provider_slug, api_slug)
+    if not route:
         # Unknown provider — nothing to attribute the event to; not metered.
         raise HTTPException(status_code=404, detail="Provider not found")
-    if provider["status"] != "active":
+    if route["provider_status"] != "active":
         raise HTTPException(status_code=403, detail="Provider suspended")
-
-    # ── 2. Resolve API ───────────────────────────────────────────────────
-    api = await pool.fetchrow(
-        "SELECT id, status, upstream_url FROM apis WHERE provider_id = $1 AND slug = $2",
-        provider["id"],
-        api_slug,
-    )
-    if not api:
+    if route["api_id"] is None:
         raise HTTPException(status_code=404, detail="API not found")
-    if api["status"] != "active":
+    if route["api_status"] != "active":
         raise HTTPException(status_code=403, detail="API not active")
 
     # ── 3. Key auth ──────────────────────────────────────────────────────
@@ -123,16 +113,16 @@ async def gateway(
         return await _reject(
             outcome="auth_failed", status_code=401,
             detail="Missing X-API-Key header",
-            provider_id=provider["id"], api_id=api["id"],
+            provider_id=route["provider_id"], api_id=route["api_id"],
             method=request.method, path=f"/{path}", t_start=t_start,
         )
 
-    bundle = await resolve_auth(raw_key, api["id"])
+    bundle = await resolve_auth(raw_key, route["api_id"])
     if not bundle:
         return await _reject(
             outcome="auth_failed", status_code=401,
             detail="Invalid or inactive key",
-            provider_id=provider["id"], api_id=api["id"],
+            provider_id=route["provider_id"], api_id=route["api_id"],
             method=request.method, path=f"/{path}", t_start=t_start,
         )
 
@@ -182,7 +172,7 @@ async def gateway(
         )
 
     # ── 6. Forward ───────────────────────────────────────────────────────
-    upstream_url = f"{api['upstream_url'].rstrip('/')}/{path}"
+    upstream_url = f"{route['upstream_url'].rstrip('/')}/{path}"
 
     forward_headers = {
         k: v
@@ -190,8 +180,8 @@ async def gateway(
         if k.lower() not in _HOP_BY_HOP
     }
     # Inject the provider's upstream credential — consumers never see it
-    if provider["shared_secret"]:
-        forward_headers["Authorization"] = f"Bearer {provider['shared_secret'].strip()}"
+    if route["shared_secret"]:
+        forward_headers["Authorization"] = f"Bearer {route['shared_secret'].strip()}"
 
     body = await request.body()
 

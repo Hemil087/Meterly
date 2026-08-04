@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from common.db import get_pool
+from common.redis_client import get_redis
+from common.route_cache import invalidate_api
 from controlplane.repositories.postgres.apis import PostgresApiRepository
 from controlplane.schemas.apis import ApiCreate, ApiOut
 
@@ -37,3 +39,6 @@ async def disable_api(
     if not api or api["provider_id"] != provider_id:
         raise HTTPException(status_code=404, detail="API not found")
     await repo.set_status(api_id, "disabled")
+    # Cached route still says "active" — drop it so the disable is
+    # enforced on the next request, not at TTL expiry.
+    await invalidate_api(await get_redis(), await get_pool(), api_id)
