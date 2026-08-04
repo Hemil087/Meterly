@@ -8,25 +8,37 @@ from fastapi.responses import Response
 
 from common.db import close_pool, get_pool
 from common.redis_client import get_redis, close_redis
-from gateway.auth import resolve_auth
 from gateway.routing import resolve_route
-from gateway.ratelimit import check_rate_limit
-from gateway.quota import check_and_increment_quota
+from gateway.checks import RequestContext, default_pipeline
 from gateway.metering import UsageEvent, record, start_flush_task, stop_flush_task
+
+
+# One shared client for all upstream calls: keeps a connection pool,
+# so repeat requests to the same upstream reuse warm TCP/TLS connections
+# instead of paying a fresh handshake per request.
+_http: httpx.AsyncClient | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _http
     await get_pool()   # warm up pool on startup
     await get_redis()
     await start_flush_task()
+    _http = httpx.AsyncClient(
+        timeout=10.0,
+        limits=httpx.Limits(max_connections=200, max_keepalive_connections=50),
+    )
     yield
+    await _http.aclose()
     await close_pool()  # clean shutdown
     await close_redis()
     await stop_flush_task()
 
 
 app = FastAPI(lifespan=lifespan)
+
+_pipeline = default_pipeline()
 
 
 # Headers that must not be forwarded (hop-by-hop)
@@ -107,69 +119,29 @@ async def gateway(
     if route["api_status"] != "active":
         raise HTTPException(status_code=403, detail="API not active")
 
-    # ── 3. Key auth ──────────────────────────────────────────────────────
-    raw_key = request.headers.get("X-API-Key")
-    if not raw_key:
-        return await _reject(
-            outcome="auth_failed", status_code=401,
-            detail="Missing X-API-Key header",
-            provider_id=route["provider_id"], api_id=route["api_id"],
-            method=request.method, path=f"/{path}", t_start=t_start,
-        )
-
-    bundle = await resolve_auth(raw_key, route["api_id"])
-    if not bundle:
-        return await _reject(
-            outcome="auth_failed", status_code=401,
-            detail="Invalid or inactive key",
-            provider_id=route["provider_id"], api_id=route["api_id"],
-            method=request.method, path=f"/{path}", t_start=t_start,
-        )
-
-    # ── 4. Rate limit ────────────────────────────────────────────────────
-    allowed, remaining, retry_after_ms = await check_rate_limit(
-        subscription_id=bundle["subscription_id"],
-        requests=bundle["rl_requests"],
-        window_seconds=bundle["rl_window_seconds"],
-        burst=bundle["rl_burst"],
+    # ── 3-5. Enforcement pipeline: auth → rate limit → quota ─────────────
+    ctx = RequestContext(
+        provider_id=route["provider_id"],
+        api_id=route["api_id"],
+        method=request.method,
+        path=f"/{path}",
+        raw_key=request.headers.get("X-API-Key"),
     )
+    verdict = await _pipeline.run(ctx)
 
-    if not allowed:
-        retry_after_secs = max(1, retry_after_ms // 1000)
+    if not verdict.allowed:
         return await _reject(
-            outcome="rate_limited", status_code=429,
-            detail="Rate limit exceeded",
-            provider_id=bundle["provider_id"], api_id=bundle["api_id"],
-            consumer_id=bundle["consumer_id"],
-            subscription_id=bundle["subscription_id"],
-            method=request.method, path=f"/{path}", t_start=t_start,
-            headers={
-                "Retry-After": str(retry_after_secs),
-                "X-RateLimit-Limit": str(bundle["rl_requests"]),
-                "X-RateLimit-Remaining": "0",
-            },
+            outcome=verdict.outcome,
+            status_code=verdict.http_status,
+            detail=verdict.detail,
+            provider_id=ctx.provider_id, api_id=ctx.api_id,
+            consumer_id=ctx.bundle["consumer_id"] if ctx.bundle else None,
+            subscription_id=ctx.bundle["subscription_id"] if ctx.bundle else None,
+            method=ctx.method, path=ctx.path, t_start=t_start,
+            headers=verdict.headers,
         )
 
-    # ── 5. Quota ─────────────────────────────────────────────────────────
-    quota_allowed, calls_used = await check_and_increment_quota(
-        subscription_id=bundle["subscription_id"],
-        monthly_quota=bundle["monthly_quota"],
-        overage_allowed=bundle["overage_allowed"],
-    )
-
-    if not quota_allowed:
-        return await _reject(
-            outcome="quota_blocked", status_code=429,
-            detail="Monthly quota exceeded",
-            provider_id=bundle["provider_id"], api_id=bundle["api_id"],
-            consumer_id=bundle["consumer_id"],
-            subscription_id=bundle["subscription_id"],
-            method=request.method, path=f"/{path}", t_start=t_start,
-            headers={
-                "X-Quota-Limit": str(bundle["monthly_quota"]),
-                "X-Quota-Used": str(calls_used),
-            },
-        )
+    bundle = ctx.bundle
 
     # ── 6. Forward ───────────────────────────────────────────────────────
     upstream_url = f"{route['upstream_url'].rstrip('/')}/{path}"
@@ -186,14 +158,13 @@ async def gateway(
     body = await request.body()
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            upstream = await client.request(
-                method=request.method,
-                url=upstream_url,
-                headers=forward_headers,
-                content=body,
-                params=dict(request.query_params),
-            )
+        upstream = await _http.request(
+            method=request.method,
+            url=upstream_url,
+            headers=forward_headers,
+            content=body,
+            params=dict(request.query_params),
+        )
     except httpx.TimeoutException:
         return await _reject(
             outcome="upstream_error", status_code=504,
@@ -238,9 +209,9 @@ async def gateway(
         if k.lower() not in _HOP_BY_HOP
     }
     response_headers["X-RateLimit-Limit"]     = str(bundle["rl_requests"])
-    response_headers["X-RateLimit-Remaining"] = str(remaining)
+    response_headers["X-RateLimit-Remaining"] = str(ctx.rl_remaining)
     response_headers["X-Quota-Limit"]         = str(bundle["monthly_quota"])
-    response_headers["X-Quota-Used"]          = str(calls_used)
+    response_headers["X-Quota-Used"]          = str(ctx.quota_used)
 
     return Response(
         content=upstream.content,

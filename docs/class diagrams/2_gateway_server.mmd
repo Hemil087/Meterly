@@ -6,20 +6,21 @@ classDiagram
     }
 
     class RequestContext {
-        provider_slug: str
-        api_slug: str
+        provider_id: bigint
+        api_id: bigint
         method: str
         path: str
         raw_key: str
-        consumer_id: bigint
-        subscription: Subscription
-        plan: Plan
+        bundle: dict "set by KeyAuthCheck"
+        rl_remaining: int "set by RateLimitCheck"
+        quota_used: int "set by QuotaCheck"
     }
 
     class CheckResult {
         allowed: bool
-        outcome: Outcome
+        outcome: str
         http_status: int
+        detail: str
         headers: dict
     }
 
@@ -31,10 +32,7 @@ classDiagram
     class KeyAuthCheck {
         +check(ctx) CheckResult
     }
-
-    class SubscriptionCheck {
-        +check(ctx) CheckResult
-    }
+    note for KeyAuthCheck "Key validity AND subscription in one check:\nthe authorization join (D-002) resolves both\nin a single Redis-cached query."
 
     class RateLimitCheck {
         +check(ctx) CheckResult
@@ -48,83 +46,45 @@ classDiagram
         checks: List~RequestCheck~
         +run(ctx) CheckResult
     }
+    note for CheckPipeline "Runs checks in order, stops at first failure.\nOrder is a contract: auth before limits,\nrate limit before quota."
 
-    class AuthCache {
-        <<interface>>
-        +resolve(key_hash) RequestContext
+    class RouteResolver {
+        <<module: gateway.routing>>
+        +resolve_route(provider_slug, api_slug) dict
     }
 
-    class RateLimiter {
-        <<interface>>
-        +try_acquire(key, limit) CheckResult
+    class AuthResolver {
+        <<module: gateway.auth>>
+        +resolve_auth(raw_key, api_id) dict
     }
 
     class TokenBucketLimiter {
-        +try_acquire(key, limit) CheckResult
-    }
-
-    class SlidingWindowLimiter {
-        +try_acquire(key, limit) CheckResult
-    }
-
-    class InMemoryLimiter {
-        +try_acquire(key, limit) CheckResult
-    }
-
-    class RateLimiterSelector {
-        +for_algorithm(name) RateLimiter
+        <<module: gateway.ratelimit + Redis Lua>>
+        +check_rate_limit(sub_id, requests, window, burst)
     }
 
     class QuotaStore {
-        <<interface>>
-        +increment_and_check(subscription_id, period, quota) CheckResult
+        <<module: gateway.quota + Redis INCR>>
+        +check_and_increment_quota(sub_id, quota, overage)
     }
 
     class UsageRecorder {
-        <<interface>>
-        +record(event) void
-    }
-
-    class BufferedUsageRecorder {
-        +record(event) void
-    }
-
-    class DirectUsageRecorder {
-        +record(event) void
-    }
-
-    class UpstreamForwarder {
-        +forward(ctx) Response
-    }
-
-    class CircuitBreaker {
-        +allow() bool
-        +on_success() void
-        +on_failure() void
+        <<module: gateway.metering>>
+        +record(event) "async queue, batched INSERT"
     }
 
     RequestCheck <|.. KeyAuthCheck
-    RequestCheck <|.. SubscriptionCheck
     RequestCheck <|.. RateLimitCheck
     RequestCheck <|.. QuotaCheck
     CheckPipeline o-- RequestCheck
 
-    RateLimiter <|.. TokenBucketLimiter
-    RateLimiter <|.. SlidingWindowLimiter
-    RateLimiter <|.. InMemoryLimiter
-    UsageRecorder <|.. BufferedUsageRecorder
-    UsageRecorder <|.. DirectUsageRecorder
-
+    GatewayHandler --> RouteResolver
     GatewayHandler --> CheckPipeline
-    GatewayHandler --> UpstreamForwarder
     GatewayHandler --> UsageRecorder
 
-    KeyAuthCheck --> AuthCache
-    RateLimitCheck --> RateLimiterSelector
-    RateLimiterSelector ..> RateLimiter
+    KeyAuthCheck --> AuthResolver
+    RateLimitCheck --> TokenBucketLimiter
     QuotaCheck --> QuotaStore
-
-    UpstreamForwarder *-- CircuitBreaker
 
     CheckPipeline ..> RequestContext
     RequestCheck ..> CheckResult
