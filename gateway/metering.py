@@ -9,9 +9,9 @@ from common.db import get_pool
 class UsageEvent:
     occurred_at: datetime
     provider_id: int
-    consumer_id: int
+    consumer_id: int | None
     api_id: int
-    subscription_id: int
+    subscription_id: int | None
     endpoint_id: int | None
     method: str
     path: str
