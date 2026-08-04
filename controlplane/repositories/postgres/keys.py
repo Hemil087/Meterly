@@ -19,12 +19,18 @@ class PostgresApiKeyRepository(ApiKeyRepository):
         )
         return dict(row)
 
-    async def revoke(self, key_id: int) -> None:
-        await self._pool.execute(
+    async def revoke(self, key_id: int) -> str | None:
+        """
+        Revokes the key and returns its key_hash (or None if no such key),
+        so the caller can invalidate the gateway's auth-bundle cache.
+        """
+        row = await self._pool.fetchrow(
             "UPDATE api_keys SET status = 'revoked', revoked_at = now() "
-            "WHERE id = $1",
+            "WHERE id = $1 "
+            "RETURNING key_hash",
             key_id,
         )
+        return row["key_hash"] if row else None
 
     async def list_by_consumer(self, consumer_id: int) -> list[dict]:
         rows = await self._pool.fetch(

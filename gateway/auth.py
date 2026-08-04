@@ -3,16 +3,11 @@ import json
 
 from common.db import get_pool
 from common.redis_client import get_redis
-
-AUTH_BUNDLE_TTL = 300  # 5 minutes — cache per key per api
+from common.auth_cache import AUTH_BUNDLE_TTL, bundle_key
 
 
 def hash_key(raw_key: str) -> str:
     return hashlib.sha256(raw_key.encode()).hexdigest()
-
-
-def _cache_key(key_hash: str) -> str:
-    return f"auth:{key_hash}"
 
 
 async def resolve_auth(raw_key: str, api_id: int) -> dict | None:
@@ -22,12 +17,16 @@ async def resolve_auth(raw_key: str, api_id: int) -> dict | None:
 
     Flow: Redis hit → return immediately
           Redis miss → Postgres query → cache result → return
+
+    Cached per (key, api): the bundle carries THIS api's subscription,
+    quota, and rate limits. Invalidation lives in common.auth_cache
+    and is triggered by the control plane on revoke / plan change.
     """
     key_hash = hash_key(raw_key)
     redis = await get_redis()
 
     # ── 1. Redis cache lookup ────────────────────────────────────────────
-    cached = await redis.get(_cache_key(key_hash))
+    cached = await redis.get(bundle_key(key_hash, api_id))
     if cached:
         return json.loads(cached)
 
@@ -69,6 +68,6 @@ async def resolve_auth(raw_key: str, api_id: int) -> dict | None:
     bundle = dict(row)
 
     # ── 3. Cache for next request ────────────────────────────────────────
-    await redis.set(_cache_key(key_hash), json.dumps(bundle), ex=AUTH_BUNDLE_TTL)
+    await redis.set(bundle_key(key_hash, api_id), json.dumps(bundle), ex=AUTH_BUNDLE_TTL)
 
     return bundle
