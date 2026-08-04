@@ -1,21 +1,33 @@
 from fastapi import APIRouter, Depends, HTTPException
 from common.db import get_pool
+from common.redis_client import get_redis
 from controlplane.repositories.postgres.subscriptions import PostgresSubscriptionRepository
 from controlplane.repositories.postgres.plans import PostgresPlanRepository
 from controlplane.schemas.subscriptions import SubscriptionCreate, SubscriptionOut, PlanChange
+from controlplane.services import AuditWriter, SubscriptionService
+from controlplane.services.errors import ConflictError, NotFoundError, ValidationError
 
 router = APIRouter(
     prefix="/providers/{provider_id}/consumers/{consumer_id}/subscriptions",
     tags=["subscriptions"],
 )
 
+ACTOR = "dashboard"
+
 
 async def get_sub_repo() -> PostgresSubscriptionRepository:
     return PostgresSubscriptionRepository(await get_pool())
 
 
-async def get_plan_repo() -> PostgresPlanRepository:
-    return PostgresPlanRepository(await get_pool())
+async def get_service() -> SubscriptionService:
+    pool = await get_pool()
+    return SubscriptionService(
+        PostgresSubscriptionRepository(pool),
+        PostgresPlanRepository(pool),
+        AuditWriter(pool),
+        await get_redis(),
+        pool,
+    )
 
 
 @router.post("/", response_model=SubscriptionOut, status_code=201)
@@ -23,20 +35,14 @@ async def subscribe(
     provider_id: int,
     consumer_id: int,
     body: SubscriptionCreate,
-    sub_repo: PostgresSubscriptionRepository = Depends(get_sub_repo),
-    plan_repo: PostgresPlanRepository = Depends(get_plan_repo),
+    svc: SubscriptionService = Depends(get_service),
 ):
-    # Guard: plan must exist and belong to the requested api
-    plan = await plan_repo.get(body.plan_id)
-    if not plan or plan["api_id"] != body.api_id:
-        raise HTTPException(status_code=400, detail="Plan does not belong to this API")
-
-    # Guard: no duplicate active subscription (partial index enforces at DB level too)
-    existing = await sub_repo.get_active(consumer_id, body.api_id)
-    if existing:
-        raise HTTPException(status_code=409, detail="Active subscription already exists")
-
-    return await sub_repo.insert(consumer_id, body.api_id, body.plan_id)
+    try:
+        return await svc.subscribe(provider_id, ACTOR, consumer_id, body.api_id, body.plan_id)
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
 
 @router.get("/", response_model=list[SubscriptionOut])
@@ -53,12 +59,12 @@ async def cancel_subscription(
     provider_id: int,
     consumer_id: int,
     subscription_id: int,
-    sub_repo: PostgresSubscriptionRepository = Depends(get_sub_repo),
+    svc: SubscriptionService = Depends(get_service),
 ):
-    sub = await sub_repo.get(subscription_id)
-    if not sub or sub["consumer_id"] != consumer_id:
-        raise HTTPException(status_code=404, detail="Subscription not found")
-    await sub_repo.set_status(subscription_id, "cancelled")
+    try:
+        await svc.cancel(provider_id, ACTOR, consumer_id, subscription_id)
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.post("/{subscription_id}/change_plan", response_model=SubscriptionOut)
@@ -67,19 +73,12 @@ async def change_plan(
     consumer_id: int,
     subscription_id: int,
     body: PlanChange,
-    sub_repo: PostgresSubscriptionRepository = Depends(get_sub_repo),
-    plan_repo: PostgresPlanRepository = Depends(get_plan_repo),
+    svc: SubscriptionService = Depends(get_service),
 ):
-    sub = await sub_repo.get(subscription_id)
-    if not sub or sub["consumer_id"] != consumer_id:
-        raise HTTPException(status_code=404, detail="Subscription not found")
-    if sub["status"] != "active":
-        raise HTTPException(status_code=400, detail="Subscription is not active")
-
-    plan = await plan_repo.get(body.new_plan_id)
-    if not plan or plan["api_id"] != sub["api_id"]:
-        raise HTTPException(status_code=400, detail="Plan does not belong to this API")
-
-    # Cancel old, create new — both in same api_id scope
-    await sub_repo.set_status(subscription_id, "cancelled")
-    return await sub_repo.insert(consumer_id, sub["api_id"], body.new_plan_id)
+    try:
+        return await svc.change_plan(provider_id, ACTOR, consumer_id,
+                                     subscription_id, body.new_plan_id)
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
